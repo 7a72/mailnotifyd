@@ -1,0 +1,51 @@
+= Email Notification Webhook Service
+
+A lightweight webhook processor for Stalwart MTA
+
+== Features
+
+* Concurrent multi-channel notifications
+* Optional authentication using `Authorization` header
+* Recipient whitelisting
+* Supported channels:
+** Telegram Bot
+** ntfy.sh
+** DingTalk Bot
+
+== Environment Variables
+
+|===
+| Variable | Description
+
+| `AUTH_TOKEN`
+| Optional token for webhook authentication
+
+| `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
+| Enable Telegram notifications
+
+| `NTFY_SERVER` / `NTFY_TOPIC` / `NTFY_TOKEN`
+| ntfy server, topic, and optional token
+
+| `DINGTALK_WEBHOOK` / `DINGTALK_SECRET`
+| DingTalk webhook and secret
+
+| `ENABLED_CHANNELS`
+| Comma-separated list: `telegram`, `ntfy`, `dingtalk`
+
+| `ALLOWED_RCPTS`
+| Comma-separated whitelist of allowed recipients
+
+| `BIND_ADDR`
+| HTTP listen address (default: `:8000`)
+|===
+
+== Docker
+
+Build locally:
+
+```bash
+docker build -t email-notifier .
+
+Run:
+
+docker run -p 8000:8000 --env-file .env email-notifier
