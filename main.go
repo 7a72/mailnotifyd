@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -570,10 +571,20 @@ func processPayload(notifiers []Notifier, payload MTARequest) {
 func extractFull(headers [][]string, key string) string {
 	for _, h := range headers {
 		if len(h) >= 2 && strings.EqualFold(h[0], key) {
-			return h[1]
+			return decodeMIMEHeader(h[1])
 		}
 	}
 	return ""
+}
+
+func decodeMIMEHeader(encoded string) string {
+	dec := new(mime.WordDecoder)
+	decoded, err := dec.DecodeHeader(encoded)
+	if err != nil {
+		log.Printf("[WARN] Failed to decode MIME header: %v, original: %s", err, encoded)
+		return encoded
+	}
+	return decoded
 }
 
 func writeAccept(w http.ResponseWriter) {
