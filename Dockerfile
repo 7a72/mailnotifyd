@@ -1,27 +1,12 @@
-FROM alpine:latest AS builder
-
-WORKDIR /app
-
-RUN apk add --no-cache zig ca-certificates tzdata
-
-COPY build.zig build.zig.zon ./
-COPY src ./src
-
-RUN zig build -Doptimize=ReleaseFast
-
 FROM alpine:latest
 
-RUN adduser -D -H app \
-    && apk add --no-cache ca-certificates tzdata
+ARG TARGETARCH
 
-WORKDIR /app
+RUN apk add --no-cache ca-certificates tzdata
 
-COPY --from=builder /app/zig-out/bin/email_notifier /app/email_notifier
+COPY dist/${TARGETARCH}/email_notifier /email_notifier
 
 ENV BIND_ADDR=:8000
-
 EXPOSE 8000
 
-USER app
-
-ENTRYPOINT ["./email_notifier"]
+ENTRYPOINT ["/email_notifier"]

@@ -41,11 +41,8 @@ A lightweight webhook processor for Stalwart MTA
 
 == Docker
 
-Build locally:
-
 ```bash
-docker build -t email-notifier .
 
-Run:
+docker pull ghcr.io/7a72/email-notifier:latest
 
-docker run -p 8000:8000 --env-file .env email-notifier
+docker run -p 8000:8000 --env-file .env ghcr.io/7a72/email-notifier
