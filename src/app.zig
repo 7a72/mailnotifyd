@@ -20,20 +20,24 @@ pub const App = struct {
     channels: Channels,
 
     pub fn run(self: *App) !void {
+        const addr = self.cfg.addr();
         var server = try httpz.Server(*App).init(
             self.allocator,
-            .{ .port = self.cfg.port() },
+            .{
+                .address = addr.host,
+                .port = addr.port,
+            },
             self,
         );
         defer {
             server.stop();
             server.deinit();
         }
-
+    
         var router = try server.router(.{});
         router.post("/", handleRoot, .{});
         router.get("/health", handleHealth, .{});
-
+    
         try server.listen();
     }
 };

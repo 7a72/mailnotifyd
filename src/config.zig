@@ -14,14 +14,15 @@ pub const Config = struct {
     telegram_chat_id: []const u8 = "",
     enabled_channels: []const u8 = "",
 
-    pub fn port(self: *const Config) u16 {
-        // ":8000" / "0.0.0.0:8000" / "8000"
+    pub fn addr(self: *const Config) struct { host: []const u8, port: u16 } {
         if (mem.lastIndexOfScalar(u8, self.bind_addr, ':')) |idx| {
+            const host = if (idx == 0) "0.0.0.0" else self.bind_addr[0..idx];
             const port_str = self.bind_addr[idx + 1 ..];
-            if (port_str.len == 0) return 8000;
-            return std.fmt.parseInt(u16, port_str, 10) catch 8000;
+            const port = std.fmt.parseInt(u16, port_str, 10) catch 8000;
+            return .{ .host = host, .port = port };
         }
-        return std.fmt.parseInt(u16, self.bind_addr, 10) catch 8000;
+        const port = std.fmt.parseInt(u16, self.bind_addr, 10) catch 8000;
+        return .{ .host = "0.0.0.0", .port = port };
     }
 };
 
