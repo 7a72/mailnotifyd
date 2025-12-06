@@ -24,13 +24,13 @@ A lightweight webhook processor for Stalwart MTA
 | Enable Telegram notifications
 
 | `NTFY_SERVER` / `NTFY_TOPIC` / `NTFY_TOKEN`
-| ntfy server, topic, and optional token
+| Enable ntfy notifications
 
 | `DINGTALK_WEBHOOK` / `DINGTALK_SECRET`
-| DingTalk webhook and secret
+| Enable DingTalk notifications
 
 | `ENABLED_CHANNELS`
-| Comma-separated list: `telegram`, `ntfy`, `dingtalk`
+| Comma-separated list: `tg`, `ntfy`, `ding`
 
 | `ALLOWED_RCPTS`
 | Comma-separated whitelist of allowed recipients
