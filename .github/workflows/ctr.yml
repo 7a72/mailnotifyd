@@ -32,13 +32,13 @@ jobs:
         run: |
           zig build -Doptimize=ReleaseFast -Dtarget=x86_64-linux-musl
           mkdir -p dist/amd64
-          cp zig-out/bin/email_notifier dist/amd64/
+          cp zig-out/bin/mailnotifyd dist/amd64/
 
       - name: Build arm64 binary
         run: |
           zig build -Doptimize=ReleaseFast -Dtarget=aarch64-linux-musl
           mkdir -p dist/arm64
-          cp zig-out/bin/email_notifier dist/arm64/
+          cp zig-out/bin/mailnotifyd dist/arm64/
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3

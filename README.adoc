@@ -12,13 +12,29 @@ A lightweight webhook processor for Stalwart MTA
 ** ntfy.sh
 ** DingTalk Bot
 
+== Endpoints
+
+== Summary Table
+
+|===
+| Method | Path | Description
+
+| POST
+| /notify
+| Main webhook endpoint
+
+| GET
+| /health 
+| Health/readiness indicator ({"status":"online"})
+|===
+
 == Environment Variables
 
 |===
 | Variable | Description
 
 | `AUTH_TOKEN`
-| Optional token for webhook authentication
+| Optional token for webhook authentication (X-Notify-Auth: <token>)
 
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID`
 | Enable Telegram notifications
@@ -43,6 +59,7 @@ A lightweight webhook processor for Stalwart MTA
 
 ```bash
 
-docker pull ghcr.io/7a72/email-notifier:latest
+docker pull ghcr.io/7a72/mailnotifyd:latest
 
-docker run -p 8000:8000 --env-file .env ghcr.io/7a72/email-notifier
+docker run -p 8000:8000 --env-file env ghcr.io/7a72/mailnotifyd
+

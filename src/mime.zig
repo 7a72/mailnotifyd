@@ -1,151 +1,360 @@
 const std = @import("std");
 const mem = std.mem;
 
-pub fn unfoldHeader(raw: []const u8, allocator: mem.Allocator) ![]u8 {
-    var out = std.array_list.Managed(u8).init(allocator);
-    defer out.deinit();
+fn unfoldHeader(raw: []const u8, allocator: mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
 
     var i: usize = 0;
     while (i < raw.len) {
         if (raw[i] == '\r' and i + 2 < raw.len and raw[i + 1] == '\n' and (raw[i + 2] == ' ' or raw[i + 2] == '\t')) {
-            try out.append(' ');
+            try out.append(allocator, ' ');
             i += 3;
         } else if (raw[i] == '\n' and i + 1 < raw.len and (raw[i + 1] == ' ' or raw[i + 1] == '\t')) {
-            try out.append(' ');
+            try out.append(allocator, ' ');
             i += 2;
         } else {
-            try out.append(raw[i]);
+            try out.append(allocator, raw[i]);
             i += 1;
         }
     }
 
-    return try out.toOwnedSlice();
-}
-
-fn isHex(c: u8) bool {
-    return (c >= '0' and c <= '9') or (c >= 'A' and c <= 'F') or (c >= 'a' and c <= 'f');
+    return try out.toOwnedSlice(allocator);
 }
 
 fn hexVal(c: u8) u8 {
-    return switch (c) {
-        '0'...'9' => c - '0',
-        'A'...'F' => c - 'A' + 10,
-        'a'...'f' => c - 'a' + 10,
-        else => 0,
-    };
+    return std.fmt.charToDigit(c, 16) catch 0;
 }
 
-fn decodeQHeader(encoded: []const u8, allocator: mem.Allocator) ![]u8 {
-    var out = std.array_list.Managed(u8).init(allocator);
-    defer out.deinit();
+fn decodeQ(encoded: []const u8, allocator: mem.Allocator) ![]u8 {
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
 
     var i: usize = 0;
     while (i < encoded.len) {
         const c = encoded[i];
+
         if (c == '_') {
-            try out.append(' ');
+            try out.append(allocator, ' ');
             i += 1;
-        } else if (c == '=' and i + 2 < encoded.len and isHex(encoded[i + 1]) and isHex(encoded[i + 2])) {
-            const b: u8 = (hexVal(encoded[i + 1]) << 4) | hexVal(encoded[i + 2]);
-            try out.append(b);
+        } else if (c == '=' and i + 2 < encoded.len and std.ascii.isHex(encoded[i + 1]) and std.ascii.isHex(encoded[i + 2])) {
+            const hi = try std.fmt.charToDigit(encoded[i + 1], 16);
+            const lo = try std.fmt.charToDigit(encoded[i + 2], 16);
+            const b: u8 = (hi << 4) | lo;
+
+            try out.append(allocator, b);
             i += 3;
         } else {
-            try out.append(c);
+            try out.append(allocator, c);
             i += 1;
         }
     }
 
-    return try out.toOwnedSlice();
+    return try out.toOwnedSlice(allocator);
 }
 
-fn decodeBHeader(encoded: []const u8, allocator: mem.Allocator) ![]u8 {
+fn decodeB(encoded: []const u8, allocator: mem.Allocator) ![]u8 {
     if (encoded.len == 0) {
         return allocator.alloc(u8, 0);
     }
 
-    var pad: usize = 0;
-    if (encoded[encoded.len - 1] == '=') pad += 1;
-    if (encoded.len >= 2 and encoded[encoded.len - 2] == '=') pad += 1;
+    const decoder = std.base64.standard.Decoder;
 
-    const decoded_len = encoded.len * 3 / 4 - pad;
+    const decoded_len = try decoder.calcSizeForSlice(encoded);
+
     const buf = try allocator.alloc(u8, decoded_len);
+    errdefer allocator.free(buf);
 
-    try std.base64.standard.Decoder.decode(buf, encoded);
+    try decoder.decode(buf, encoded);
 
     return buf;
 }
 
-// RFC 2047
-pub fn decodeMimeHeader(raw: []const u8, allocator: mem.Allocator) ![]const u8 {
-    const input = unfoldHeader(raw, allocator) catch raw;
+fn decodeWord(
+    input: []const u8,
+    start: usize,
+    allocator: mem.Allocator,
+) !?struct { end: usize, data: []u8 } {
+    if (start + 2 > input.len) return null;
+    if (input[start] != '=' or input[start + 1] != '?') return null;
 
-    var out = std.array_list.Managed(u8).init(allocator);
-    defer out.deinit();
+    const charset_end = mem.indexOfScalarPos(u8, input, start + 2, '?') orelse return null;
+    if (charset_end + 2 >= input.len) return null;
+
+    const enc_char = input[charset_end + 1];
+    if (input[charset_end + 2] != '?') return null;
+
+    const encoded_end = mem.indexOfScalarPos(u8, input, charset_end + 3, '?') orelse return null;
+    if (encoded_end + 1 >= input.len or input[encoded_end + 1] != '=') return null;
+
+    const encoded = input[charset_end + 3 .. encoded_end];
+    const encoding = std.ascii.toUpper(enc_char);
+
+    var decoded: []u8 = undefined;
+    switch (encoding) {
+        'Q' => decoded = decodeQ(encoded, allocator) catch return null,
+        'B' => decoded = decodeB(encoded, allocator) catch return null,
+        else => return null,
+    }
+
+    return .{
+        .end = encoded_end + 2,
+        .data = decoded,
+    };
+}
+
+pub fn decodeMimeHeader(raw: []const u8, allocator: mem.Allocator) ![]const u8 {
+    var input = raw;
+    var unfolded_buf: ?[]u8 = null;
+    if (unfoldHeader(raw, allocator)) |buf| {
+        input = buf;
+        unfolded_buf = buf;
+    } else |_| {
+        // ignore unfold error, fallback to raw
+    }
+    defer if (unfolded_buf) |buf| allocator.free(buf);
+
+    var out = std.ArrayList(u8).empty;
+    defer out.deinit(allocator);
 
     var i: usize = 0;
     while (i < input.len) {
-        if (i + 2 <= input.len and input[i] == '=' and input[i + 1] == '?') {
-            const start = i;
-
-            const q1_opt = mem.indexOfScalarPos(u8, input, i + 2, '?');
-            if (q1_opt == null) {
-                try out.append(input[i]);
-                i += 1;
+        if (i + 1 < input.len and input[i] == '=' and input[i + 1] == '?') {
+            if (try decodeWord(input, i, allocator)) |ew| {
+                defer allocator.free(ew.data);
+                try out.appendSlice(allocator, ew.data);
+                i = ew.end;
                 continue;
             }
-            const q1 = q1_opt.?;
-
-            if (q1 + 2 >= input.len) {
-                try out.append(input[i]);
-                i += 1;
-                continue;
-            }
-
-            const enc_char = input[q1 + 1];
-            if (input[q1 + 2] != '?') {
-                try out.append(input[i]);
-                i += 1;
-                continue;
-            }
-
-            const q2_opt = mem.indexOfScalarPos(u8, input, q1 + 3, '?');
-            if (q2_opt == null) {
-                try out.append(input[i]);
-                i += 1;
-                continue;
-            }
-            const q2 = q2_opt.?;
-
-            if (q2 + 1 >= input.len or input[q2 + 1] != '=') {
-                try out.append(input[i]);
-                i += 1;
-                continue;
-            }
-
-            const encoding = std.ascii.toUpper(enc_char);
-            const encoded_data = input[q1 + 3 .. q2];
-
-            const decoded: []u8 = switch (encoding) {
-                'B' => decodeBHeader(encoded_data, allocator),
-                'Q' => decodeQHeader(encoded_data, allocator),
-                else => {
-                    try out.appendSlice(input[start .. q2 + 2]);
-                    i = q2 + 2;
-                    continue;
-                },
-            } catch {
-                try out.appendSlice(input[start .. q2 + 2]);
-                i = q2 + 2;
-                continue;
-            };
-
-            try out.appendSlice(decoded);
-            i = q2 + 2; // skip "?="
-        } else {
-            try out.append(input[i]);
-            i += 1;
         }
+
+        try out.append(allocator, input[i]);
+        i += 1;
     }
 
-    return try out.toOwnedSlice();
+    return try out.toOwnedSlice(allocator);
+}
+
+const testing = std.testing;
+
+test "unfold header - CRLF with space" {
+    const allocator = testing.allocator;
+    const input = "Subject: This is a\r\n long header";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Subject: This is a long header", result);
+}
+
+test "unfold header - CRLF with tab" {
+    const allocator = testing.allocator;
+    const input = "Subject: This is a\r\n\tlong header";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Subject: This is a long header", result);
+}
+
+test "unfold header - LF with space" {
+    const allocator = testing.allocator;
+    const input = "Subject: This is a\n long header";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Subject: This is a long header", result);
+}
+
+test "Q encoding - ASCII" {
+    const allocator = testing.allocator;
+    const input = "=?UTF-8?Q?Hello_World?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Hello World", result);
+}
+
+test "Q encoding - Chinese (CJK)" {
+    const allocator = testing.allocator;
+    // "你好世界" encoded in Q-encoding
+    const input = "=?UTF-8?Q?=E4=BD=A0=E5=A5=BD=E4=B8=96=E7=95=8C?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("你好世界", result);
+}
+
+test "Q encoding - Japanese (CJK)" {
+    const allocator = testing.allocator;
+    // "こんにちは" encoded in Q-encoding
+    const input = "=?UTF-8?Q?=E3=81=93=E3=82=93=E3=81=AB=E3=81=A1=E3=81=AF?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("こんにちは", result);
+}
+
+test "Q encoding - Korean (CJK)" {
+    const allocator = testing.allocator;
+    // "안녕하세요" encoded in Q-encoding
+    const input = "=?UTF-8?Q?=EC=95=88=EB=85=95=ED=95=98=EC=84=B8=EC=9A=94?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("안녕하세요", result);
+}
+
+test "Q encoding - Cyrillic (Russian)" {
+    const allocator = testing.allocator;
+    // "Привет мир" encoded in Q-encoding
+    const input = "=?UTF-8?Q?=D0=9F=D1=80=D0=B8=D0=B2=D0=B5=D1=82_=D0=BC=D0=B8=D1=80?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Привет мир", result);
+}
+
+test "Q encoding - Emoji" {
+    const allocator = testing.allocator;
+    // "Hello 👋 World 🌍" encoded in Q-encoding
+    const input = "=?UTF-8?Q?Hello_=F0=9F=91=8B_World_=F0=9F=8C=8D?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Hello 👋 World 🌍", result);
+}
+
+test "Q encoding - Mixed emoji" {
+    const allocator = testing.allocator;
+    // "😀😃😄😁" encoded in Q-encoding
+    const input = "=?UTF-8?Q?=F0=9F=98=80=F0=9F=98=83=F0=9F=98=84=F0=9F=98=81?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("😀😃😄😁", result);
+}
+
+test "B encoding - ASCII" {
+    const allocator = testing.allocator;
+    // "Hello World" in base64
+    const input = "=?UTF-8?B?SGVsbG8gV29ybGQ=?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Hello World", result);
+}
+
+test "B encoding - Chinese (CJK)" {
+    const allocator = testing.allocator;
+    // "你好世界" in base64
+    const input = "=?UTF-8?B?5L2g5aW95LiW55WM?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("你好世界", result);
+}
+
+test "B encoding - Japanese (CJK)" {
+    const allocator = testing.allocator;
+    // "こんにちは" in base64
+    const input = "=?UTF-8?B?44GT44KT44Gr44Gh44Gv?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("こんにちは", result);
+}
+
+test "B encoding - Korean (CJK)" {
+    const allocator = testing.allocator;
+    // "안녕하세요" in base64
+    const input = "=?UTF-8?B?7JWI64WV7ZWY7IS47JqU?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("안녕하세요", result);
+}
+
+test "B encoding - Cyrillic (Russian)" {
+    const allocator = testing.allocator;
+    // "Привет мир" in base64
+    const input = "=?UTF-8?B?0J/RgNC40LLQtdGCINC80LjRgA==?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Привет мир", result);
+}
+
+test "B encoding - Emoji" {
+    const allocator = testing.allocator;
+    // "Hello 👋 World 🌍" in base64
+    const input = "=?UTF-8?B?SGVsbG8g8J+RiyBXb3JsZCDwn4yN?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Hello 👋 World 🌍", result);
+}
+
+test "B encoding - Multiple emoji" {
+    const allocator = testing.allocator;
+    // "🎉🎊🎈🎁" in base64
+    const input = "=?UTF-8?B?8J+OifCfjorwn46I8J+OgQ==?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("🎉🎊🎈🎁", result);
+}
+
+test "Mixed encoding - Multiple encoded words" {
+    const allocator = testing.allocator;
+    // Mix of plain text and encoded words
+    const input = "Subject: =?UTF-8?Q?=E4=BD=A0=E5=A5=BD?= and =?UTF-8?B?8J+RiQ==?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Subject: 你好 and 👉", result);
+}
+
+test "Mixed encoding - Unfolded and encoded" {
+    const allocator = testing.allocator;
+    const input = "Subject: =?UTF-8?Q?=E4=BD=A0=E5=A5=BD?=\r\n =?UTF-8?Q?=E4=B8=96=E7=95=8C?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Subject: 你好 世界", result);
+}
+
+test "Complex - All features combined" {
+    const allocator = testing.allocator;
+    // Unfolded header with Chinese Q-encoding, Russian B-encoding, and emoji
+    const input = "From: =?UTF-8?Q?=E5=BC=A0=E4=B8=89?=\r\n <user@example.com> =?UTF-8?B?0J/RgNC40LLQtdGC?= =?UTF-8?Q?=F0=9F=91=8B?=";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("From: 张三 <user@example.com> Привет 👋", result);
+}
+
+test "Edge case - Empty string" {
+    const allocator = testing.allocator;
+    const input = "";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("", result);
+}
+
+test "Edge case - Plain text only" {
+    const allocator = testing.allocator;
+    const input = "Plain text header";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("Plain text header", result);
+}
+
+test "Edge case - Invalid encoded word (ignored)" {
+    const allocator = testing.allocator;
+    const input = "=?UTF-8?X?invalid?= text";
+    const result = try decodeMimeHeader(input, allocator);
+    defer allocator.free(result);
+
+    try testing.expectEqualStrings("=?UTF-8?X?invalid?= text", result);
 }

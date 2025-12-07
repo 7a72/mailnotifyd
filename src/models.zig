@@ -31,3 +31,9 @@ pub const MTARequest = struct {
     envelope: Envelope,
     message: Message,
 };
+
+pub const Metadata = struct {
+    from: []const u8,
+    to: []const u8,
+    subject: []const u8,
+};
